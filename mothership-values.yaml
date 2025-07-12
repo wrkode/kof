@@ -1,0 +1,14 @@
+global:
+  clusterLabel: clusterName
+  clusterName: sinaptikdev
+  random_username_length: 8
+  random_password_length: 12
+
+  # https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass
+  storageClass: local-path
+
+kcm:
+  installTemplates: true
+  serviceMonitor:
+    enabled: true
+  namespace: kcm-system

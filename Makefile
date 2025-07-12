@@ -324,6 +324,27 @@ helm-plugin:
 .PHONY: cli-install
 cli-install: yq helm kind helm-plugin ## Install the necessary CLI tools for deployment, development and testing.
 
+.PHONY: quickstart-single
+quickstart-single: ## Deploy KOF in single cluster mode for development/testing
+	./scripts/quickstart-setup.sh
+
+.PHONY: quickstart-multi
+quickstart-multi: ## Deploy KOF in multi-cluster mode (requires cluster role)
+	@if [ -z "$(CLUSTER_ROLE)" ]; then \
+		echo "Usage: make quickstart-multi CLUSTER_ROLE=management|regional|child"; \
+		echo "Example: make quickstart-multi CLUSTER_ROLE=management"; \
+		exit 1; \
+	fi
+	./scripts/quickstart-setup.sh --mode multi-cluster --cluster-role $(CLUSTER_ROLE)
+
+.PHONY: quickstart-istio
+quickstart-istio: ## Deploy KOF with Istio service mesh
+	./scripts/quickstart-setup.sh --enable-istio
+
+.PHONY: quickstart-cleanup
+quickstart-cleanup: ## Clean up KOF installation
+	./scripts/quickstart-cleanup.sh
+
 .PHONY: support-bundle
 support-bundle: SUPPORT_BUNDLE_OUTPUT=$(CURDIR)/support-bundle-$(shell date +"%Y-%m-%dT%H_%M_%S")
 support-bundle: envsubst support-bundle-cli

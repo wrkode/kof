@@ -21,16 +21,21 @@ Before starting, ensure you have:
 | **Storage** | 25 GB | 50+ GB |
 | **Nodes** | 1 | 3+ |
 
-## 🚀 15-Minute Setup (Any Kubernetes Cluster)
+## 🎯 Deployment Scenarios
 
-This streamlined setup works on any Kubernetes cluster including:
-- **k0s** (Zero friction Kubernetes)
-- **k3s** (Lightweight Kubernetes)
-- **AKS** (Azure Kubernetes Service)
-- **GKE** (Google Kubernetes Engine)
-- **EKS** (Amazon Elastic Kubernetes Service)
-- **RKE2** (Rancher Kubernetes Engine)
-- **kubeadm** (Standard Kubernetes)
+Choose the deployment scenario that best fits your needs:
+
+### 📊 Scenario Comparison
+
+| Scenario | Use Case | Complexity | Features |
+|----------|----------|------------|----------|
+| **Single Cluster** | Development, testing, proof-of-concept | Low | All components in one cluster |
+| **Multi-Cluster** | Production, scalability, separation of concerns | Medium | Dedicated management, storage, and workload clusters |
+| **k0rdent-Managed** | Enterprise, fleet management | High | Full k0rdent integration with automated cluster lifecycle |
+
+## 🚀 15-Minute Setup (Single Cluster)
+
+This streamlined setup works on any Kubernetes cluster including k0s, k3s, AKS, GKE, and EKS.
 
 ### Step 1: Verify Cluster Access
 
@@ -286,9 +291,9 @@ ingress:
 EOF
 ```
 
-## 🏢 Advanced Multi-Cluster Setup
+## 🏢 Production Multi-Cluster Setup
 
-For production environments, deploy KOF across multiple clusters:
+For production environments, deploy KOF across multiple clusters with enhanced features:
 
 ### Architecture Overview
 
@@ -298,6 +303,7 @@ For production environments, deploy KOF across multiple clusters:
         │                        │                [Child Cluster 2]
         │                        │                      │
         └─── UI & Control        └─── Storage      └─── Workloads
+        └─── DNS & Istio         └─── Aggregation  └─── Collection
 ```
 
 ### Step 1: Management Cluster
@@ -331,39 +337,181 @@ helm install kof-collectors oci://ghcr.io/k0rdent/kof/charts/kof-collectors -n k
   --set global.regionalEndpoint=https://regional.yourdomain.com
 ```
 
-## 🔧 Common Configuration Tasks
+## 🌍 DNS Auto-Configuration
 
-### Enable Persistent Storage
+For production setups, automate DNS record management:
+
+### AWS Route53 Setup
 
 ```bash
-# For cloud providers with dynamic provisioning
+# Create external-dns IAM user with Route53 permissions
+# Policy: https://github.com/kubernetes-sigs/external-dns/blob/master/docs/tutorials/aws.md#iam-policy
+
+# Create credentials file
+cat > external-dns-aws-credentials <<EOF
+[default]
+aws_access_key_id = YOUR_ACCESS_KEY_ID
+aws_secret_access_key = YOUR_SECRET_ACCESS_KEY
+EOF
+
+# Create secret
+kubectl create namespace kof
+kubectl create secret generic external-dns-aws-credentials -n kof \
+  --from-file external-dns-aws-credentials
+
+# Enable in values
 cat >> quickstart-values.yaml <<EOF
-persistence:
+external-dns:
   enabled: true
-  size: 50Gi
-  storageClass: "fast-ssd"  # Use your preferred storage class
+  provider: aws
+  domainFilters:
+    - yourdomain.com
+  policy: sync
 EOF
 ```
 
-### Configure Resource Limits
+### Azure DNS Setup
+
+```bash
+# Create service principal with DNS Zone Contributor role
+# Follow: https://github.com/kubernetes-sigs/external-dns/blob/master/docs/tutorials/azure.md
+
+# Create azure.json
+cat > azure.json <<EOF
+{
+  "tenantId": "YOUR_TENANT_ID",
+  "subscriptionId": "YOUR_SUBSCRIPTION_ID",
+  "resourceGroup": "YOUR_RESOURCE_GROUP",
+  "aadClientId": "YOUR_SP_APP_ID",
+  "aadClientSecret": "YOUR_SP_PASSWORD"
+}
+EOF
+
+# Create secret
+kubectl create secret generic external-dns-azure-credentials -n kof \
+  --from-file azure.json
+
+# Enable in values
+cat >> quickstart-values.yaml <<EOF
+external-dns:
+  enabled: true
+  provider: azure
+  domainFilters:
+    - yourdomain.com
+EOF
+```
+
+## 🔒 Istio Service Mesh Integration
+
+For secure multi-cluster communication without external DNS:
+
+### Enable Istio
+
+```bash
+# Create and label KOF namespace for Istio injection
+kubectl create namespace kof
+kubectl label namespace kof istio-injection=enabled
+
+# Install Istio (if not already installed)
+curl -L https://istio.io/downloadIstio | sh -
+export PATH=$PWD/istio-*/bin:$PATH
+istioctl install --set values.defaultRevision=default
+
+# Deploy KOF with Istio configuration
+helm install kof-istio oci://ghcr.io/k0rdent/kof/charts/kof-istio -n istio-system --create-namespace
+```
+
+### Configure Multi-Cluster Istio
+
+```bash
+# For each cluster, configure network and cluster names
+cat >> quickstart-values.yaml <<EOF
+istio:
+  enabled: true
+  multiCluster:
+    clusterName: cluster-1
+    network: network-1
+  gateway:
+    enabled: true
+EOF
+```
+
+## 🔧 Advanced Configuration Tasks
+
+### Custom Storage Configuration
+
+```bash
+# For cloud providers with high-performance storage
+cat >> quickstart-values.yaml <<EOF
+global:
+  storageClass: "fast-ssd"  # Use your preferred storage class
+
+persistence:
+  enabled: true
+  size: 100Gi
+  storageClass: "premium-ssd"
+
+victoriametrics:
+  storage:
+    size: 200Gi
+    storageClass: "fast-ssd"
+
+jaeger:
+  storage:
+    elasticsearch:
+      enabled: true
+      storage:
+        size: 100Gi
+        storageClass: "ssd"
+EOF
+```
+
+### Resource Limits and Requests
 
 ```bash
 # Adjust resources based on your cluster size
 cat >> quickstart-values.yaml <<EOF
 resources:
-  limits:
-    cpu: 2000m
-    memory: 4Gi
   requests:
     cpu: 500m
     memory: 1Gi
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+
+victoriametrics:
+  vmcluster:
+    vminsert:
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+    vmselect:
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+    vmstorage:
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: 2000m
+          memory: 4Gi
 EOF
 ```
 
-### Enable SSL/TLS
+### SSL/TLS Configuration
 
 ```bash
-# For clusters with cert-manager
+# For clusters with cert-manager and Let's Encrypt
 cat >> quickstart-values.yaml <<EOF
 ingress:
   enabled: true
@@ -372,6 +520,32 @@ ingress:
     secretName: kof-tls-secret
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    kubernetes.io/ingress.class: nginx
+
+cert-manager:
+  enabled: true
+  clusterIssuer:
+    enabled: true
+    email: admin@yourdomain.com
+    acmeServer: https://acme-v02.api.letsencrypt.org/directory
+EOF
+```
+
+### Custom Endpoints Configuration
+
+```bash
+# Override default endpoints for existing infrastructure
+cat >> quickstart-values.yaml <<EOF
+kof:
+  endpoints:
+    metrics:
+      write: "https://custom-metrics.yourdomain.com/write"
+      read: "https://custom-metrics.yourdomain.com/read"
+    logs:
+      write: "https://custom-logs.yourdomain.com/write"
+      read: "https://custom-logs.yourdomain.com/read"
+    traces:
+      write: "https://custom-traces.yourdomain.com/write"
 EOF
 ```
 
@@ -394,13 +568,15 @@ kubectl port-forward svc/kof-mothership-kof-operator-ui 9090:9090 -n kof &
 ### Test Data Collection
 
 ```bash
-# Deploy a test application
+# Deploy a test application with OpenTelemetry instrumentation
 kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: test-metrics-app
   namespace: default
+  annotations:
+    instrumentation.opentelemetry.io/inject-nodejs: "true"
 spec:
   replicas: 1
   selector:
@@ -416,6 +592,11 @@ spec:
         image: nginx:latest
         ports:
         - containerPort: 80
+        env:
+        - name: OTEL_SERVICE_NAME
+          value: "test-app"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.name=test-app,service.version=1.0.0"
 ---
 apiVersion: v1
 kind: Service
@@ -434,6 +615,18 @@ EOF
 # Check in Grafana dashboards after 1-2 minutes
 ```
 
+### Performance Testing
+
+```bash
+# Generate load to test metrics collection
+kubectl run load-generator --image=busybox:1.28 --restart=Never -- \
+  /bin/sh -c "while true; do wget -q -O- http://test-metrics-app.default.svc.cluster.local; sleep 0.1; done"
+
+# Monitor resource usage
+kubectl top pods -n kof
+kubectl top nodes
+```
+
 ## 🚨 Troubleshooting
 
 ### Common Issues
@@ -444,9 +637,10 @@ EOF
 kubectl describe nodes
 kubectl top nodes
 
-# Check storage class
+# Check storage class and PVC status
 kubectl get storageclass
-kubectl describe storageclass $DEFAULT_STORAGE_CLASS
+kubectl get pvc -n kof
+kubectl describe pvc -n kof
 ```
 
 **Ingress not working**:
@@ -454,6 +648,9 @@ kubectl describe storageclass $DEFAULT_STORAGE_CLASS
 # Check ingress controller
 kubectl get pods -n ingress-nginx
 kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
+
+# Verify ingress configuration
+kubectl get ingress -n kof -o yaml
 ```
 
 **Metrics not appearing**:
@@ -461,6 +658,30 @@ kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
 # Check collectors
 kubectl logs -n kof -l app.kubernetes.io/name=opentelemetry-collector
 kubectl get opentelemetrycollector -n kof
+
+# Check VictoriaMetrics
+kubectl logs -n kof -l app.kubernetes.io/name=vminsert
+kubectl logs -n kof -l app.kubernetes.io/name=vmselect
+```
+
+**DNS resolution issues**:
+```bash
+# Check external-dns logs
+kubectl logs -n kof -l app.kubernetes.io/name=external-dns
+
+# Verify DNS records
+nslookup grafana.yourdomain.com
+dig +short grafana.yourdomain.com
+```
+
+**Istio connectivity issues**:
+```bash
+# Check Istio sidecar injection
+kubectl get pods -n kof -o jsonpath='{.items[*].spec.containers[*].name}' | grep istio-proxy
+
+# Verify Istio configuration
+istioctl analyze -n kof
+istioctl proxy-config cluster -n kof <pod-name>
 ```
 
 **Storage issues**:
@@ -468,31 +689,62 @@ kubectl get opentelemetrycollector -n kof
 # Check persistent volumes
 kubectl get pv,pvc -n kof
 kubectl describe pvc -n kof
+
+# Check storage class provisioner
+kubectl describe storageclass $DEFAULT_STORAGE_CLASS
 ```
 
 ### Getting Help
 
 1. **Check pod logs**: `kubectl logs -n kof <pod-name>`
 2. **Check events**: `kubectl get events -n kof --sort-by=.metadata.creationTimestamp`
-3. **Community Support**: [GitHub Discussions](https://github.com/k0rdent/kof/discussions)
-4. **Report Issues**: [GitHub Issues](https://github.com/k0rdent/kof/issues)
+3. **Generate support bundle**: See [Troubleshooting Guide](TROUBLESHOOTING.md)
+4. **Community Support**: [GitHub Discussions](https://github.com/k0rdent/kof/discussions)
+5. **Report Issues**: [GitHub Issues](https://github.com/k0rdent/kof/issues)
 
 ## 🎯 Next Steps
 
 Once KOF is running:
 
-1. **Explore Dashboards**: Browse pre-built Grafana dashboards
-2. **Configure Alerts**: Set up alerting rules for your environment
-3. **Add Applications**: Instrument your apps with OpenTelemetry
-4. **Scale Deployment**: Add more regional and child clusters
-5. **Enhance Security**: Configure authentication and network policies
+1. **Explore Dashboards**: Browse pre-built Grafana dashboards for infrastructure and application metrics
+2. **Configure Alerts**: Set up alerting rules for your environment using Prometheus AlertManager
+3. **Add Applications**: Instrument your apps with OpenTelemetry for distributed tracing
+4. **Scale Deployment**: Add more regional and child clusters for larger environments
+5. **Enhance Security**: Configure authentication, authorization, and network policies
+6. **Integrate with k0rdent**: Migrate to k0rdent-managed clusters for enterprise features
+
+## 🔗 Integration with k0rdent
+
+If you have a [k0rdent management cluster](https://docs.k0rdent.io/next/admin/kof/kof-install/), you can integrate KOF for automated multi-cluster management:
+
+### Prerequisites for k0rdent Integration
+
+```bash
+# Verify k0rdent is installed
+kubectl get clusterdeployments -n kcm-system
+
+# Check available cluster templates
+kubectl get clustertemplates -n kcm-system
+```
+
+### Migrate to k0rdent-Managed KOF
+
+```bash
+# Label existing clusters for k0rdent management
+kubectl label cluster <cluster-name> k0rdent.mirantis.com/kof-cluster-role=regional
+kubectl label cluster <cluster-name> k0rdent.mirantis.com/kof-storage-secrets=true
+
+# Deploy using k0rdent ClusterDeployment (see official docs)
+```
 
 ## 📚 Additional Resources
 
-- [Production Deployment Guide](PRODUCTION.md)
-- [Security Configuration](SECURITY.md)
-- [Architecture Overview](README.md)
-- [Troubleshooting Guide](TROUBLESHOOTING.md)
+- [Official KOF Installation Guide](https://docs.k0rdent.io/next/admin/kof/kof-install/) - Enterprise multi-cluster setup with k0rdent
+- [Production Deployment Guide](PRODUCTION.md) - Advanced production configurations
+- [Security Configuration](SECURITY.md) - Security hardening and best practices
+- [Architecture Overview](README.md) - Detailed system architecture
+- [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions
+- [k0rdent Documentation](https://docs.k0rdent.io/) - Full k0rdent platform documentation
 
 ---
 

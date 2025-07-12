@@ -72,15 +72,24 @@ Get KOF running in 15 minutes on any Kubernetes cluster:
 git clone https://github.com/k0rdent/kof.git
 cd kof
 
-# Run the quick setup script
+# Single cluster setup (default)
 ./scripts/quickstart-setup.sh
+
+# Multi-cluster with Istio and DNS auto-config
+./scripts/quickstart-setup.sh --mode multi-cluster --cluster-role management --enable-istio --enable-dns --dns-provider aws --dns-domain example.com
+
+# View all options
+./scripts/quickstart-setup.sh --help
 ```
 
 This script automatically:
 - Detects your cluster type (k0s, k3s, AKS, GKE, EKS)
-- Installs required dependencies (cert-manager, ingress controller)
+- Installs required dependencies (cert-manager, ingress controller, Istio)
+- Supports single-cluster and multi-cluster deployments
+- Configures DNS auto-management (AWS Route53, Azure DNS, Google Cloud DNS)
+- Enables Istio service mesh for secure multi-cluster communication
 - Deploys KOF components with optimal configuration
-- Provides access instructions
+- Provides comprehensive access instructions
 
 ### Manual Setup
 
