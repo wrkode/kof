@@ -58,34 +58,37 @@ KOF follows a hub-and-spoke architecture with three cluster types:
 
 ### Prerequisites
 
-- Kubernetes 1.19+ cluster
-- Helm 3.0+
-- kubectl configured for your cluster
-- [k0rdent/kcm](https://github.com/k0rdent/kcm) installed
+- **Kubernetes 1.19+ cluster** (k0s, k3s, AKS, GKE, EKS, etc.)
+- **Helm 3.0+** installed
+- **kubectl** configured for your cluster
+- **Admin permissions** on the cluster
 
-### Local Development Setup
+### One-Command Setup
+
+Get KOF running in 15 minutes on any Kubernetes cluster:
 
 ```bash
-# Clone repositories
-git clone https://github.com/k0rdent/kcm.git
+# Clone the repository
 git clone https://github.com/k0rdent/kof.git
+cd kof
 
-# Setup KCM
-cd kcm && make cli-install && make dev-apply
-
-# Setup KOF
-cd ../kof && make cli-install && make registry-deploy && make helm-push
-
-# Deploy KOF components
-make dev-operators-deploy
-make dev-ms-deploy
-make dev-storage-deploy
-make dev-collectors-deploy
+# Run the quick setup script
+./scripts/quickstart-setup.sh
 ```
+
+This script automatically:
+- Detects your cluster type (k0s, k3s, AKS, GKE, EKS)
+- Installs required dependencies (cert-manager, ingress controller)
+- Deploys KOF components with optimal configuration
+- Provides access instructions
+
+### Manual Setup
+
+For detailed step-by-step instructions, see our [Quick Start Guide](docs/QUICKSTART.md).
 
 ### Production Installation
 
-For production deployments, see our [Installation Guide](docs/INSTALL.md) and [Production Guide](docs/PRODUCTION.md).
+For production deployments, see our [Production Guide](docs/PRODUCTION.md) with security hardening, high availability, and scaling configurations.
 
 ## 🧩 Components
 

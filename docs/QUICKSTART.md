@@ -1,6 +1,6 @@
 # KOF Quick Start Guide
 
-Get KOF up and running in 15 minutes! This guide covers three deployment scenarios to help you get started quickly.
+Get KOF up and running in 15 minutes on any Kubernetes cluster! This guide covers deployment on real Kubernetes clusters including k0s, k3s, AKS, GKE, and EKS.
 
 ## 📋 Prerequisites
 
@@ -9,7 +9,7 @@ Before starting, ensure you have:
 - **Kubernetes cluster** (1.19+) with admin access
 - **Helm** 3.0+ installed
 - **kubectl** configured for your cluster
-- **Docker** (for local development)
+- **Internet connectivity** for pulling images
 - **Git** for cloning repositories
 
 ### System Requirements
@@ -21,71 +21,32 @@ Before starting, ensure you have:
 | **Storage** | 25 GB | 50+ GB |
 | **Nodes** | 1 | 3+ |
 
-## 🚀 Option 1: Local Development (Fastest)
+## 🚀 15-Minute Setup (Any Kubernetes Cluster)
 
-Perfect for development, testing, and learning KOF.
+This streamlined setup works on any Kubernetes cluster including:
+- **k0s** (Zero friction Kubernetes)
+- **k3s** (Lightweight Kubernetes)
+- **AKS** (Azure Kubernetes Service)
+- **GKE** (Google Kubernetes Engine)
+- **EKS** (Amazon Elastic Kubernetes Service)
+- **RKE2** (Rancher Kubernetes Engine)
+- **kubeadm** (Standard Kubernetes)
 
-### Step 1: Setup KCM
-
-```bash
-# Clone and setup KCM (required dependency)
-git clone https://github.com/k0rdent/kcm.git
-cd kcm
-make cli-install
-make dev-apply
-```
-
-### Step 2: Setup KOF
+### Step 1: Verify Cluster Access
 
 ```bash
-# Clone KOF in a separate directory
-cd ..
-git clone https://github.com/k0rdent/kof.git
-cd kof
+# Verify cluster connectivity
+kubectl cluster-info
+kubectl get nodes
 
-# Install tools and setup local registry
-make cli-install
-make registry-deploy
-make helm-push
+# Check available storage classes
+kubectl get storageclass
+
+# Verify you have cluster-admin permissions
+kubectl auth can-i create clusterrole --all-namespaces
 ```
 
-### Step 3: Deploy KOF Components
-
-```bash
-# Deploy in order (dependencies matter)
-make dev-operators-deploy    # CRDs and operators
-make dev-ms-deploy          # Mothership (UI and management)
-make dev-storage-deploy     # Storage backend
-make dev-collectors-deploy  # Data collectors
-```
-
-### Step 4: Access the UI
-
-```bash
-# Port forward to access Grafana
-kubectl port-forward svc/grafana-vm-service 3000:3000 -n kof
-
-# Get admin credentials
-kubectl get secret grafana-admin-credentials -n kof -o jsonpath='{.data.GF_SECURITY_ADMIN_USER}' | base64 -d
-kubectl get secret grafana-admin-credentials -n kof -o jsonpath='{.data.GF_SECURITY_ADMIN_PASSWORD}' | base64 -d
-```
-
-Open http://localhost:3000 and login with the credentials above.
-
-### Step 5: Explore KOF Operator UI
-
-```bash
-# Port forward to access KOF operator UI
-kubectl port-forward svc/kof-mothership-kof-operator-ui 9090:9090 -n kof
-```
-
-Open http://localhost:9090 to see Prometheus targets and collector metrics.
-
-## 🌐 Option 2: Single Cluster Production
-
-Deploy all KOF components to a single production cluster.
-
-### Step 1: Install Dependencies
+### Step 2: Install Dependencies
 
 ```bash
 # Install cert-manager for TLS
@@ -93,286 +54,443 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 
 # Wait for cert-manager to be ready
 kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager -n cert-manager
+
+# Install ingress controller (choose based on your cluster)
+# For cloud providers (AKS/GKE/EKS):
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/cloud/deploy.yaml
+
+# For on-premises (k0s/k3s/kubeadm):
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/baremetal/deploy.yaml
+
+# Wait for ingress controller
+kubectl wait --for=condition=Available --timeout=300s deployment/ingress-nginx-controller -n ingress-nginx
 ```
 
-### Step 2: Configure Values
+### Step 3: Add KOF Helm Repository
 
 ```bash
-# Create production values file
-cat > production-values.yaml <<EOF
-global:
-  clusterName: production
-  storageClass: "your-storage-class"
+# Add the KOF Helm repository
+helm repo add kof oci://ghcr.io/k0rdent/kof/charts
+helm repo update
 
+# Verify repository is added
+helm search repo kof
+```
+
+### Step 4: Configure Values
+
+```bash
+# Get your default storage class
+DEFAULT_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}')
+
+# If no default storage class, use the first available
+if [ -z "$DEFAULT_STORAGE_CLASS" ]; then
+    DEFAULT_STORAGE_CLASS=$(kubectl get storageclass -o jsonpath='{.items[0].metadata.name}')
+fi
+
+echo "Using storage class: $DEFAULT_STORAGE_CLASS"
+
+# Create quick-start values file
+cat > quickstart-values.yaml <<EOF
+global:
+  clusterName: quickstart
+  storageClass: "$DEFAULT_STORAGE_CLASS"
+
+# Enable single-cluster mode (all components)
 grafana:
-  ingress:
-    enabled: true
-    host: grafana.yourdomain.com
+  enabled: true
   security:
     create_secret: true
+  persistence:
+    enabled: true
+    size: 10Gi
 
 victoriametrics:
   enabled: true
   vmcluster:
     enabled: true
-    replicationFactor: 2
-    replicaCount: 2
+    replicationFactor: 1
+    replicaCount: 1
 
-cert-manager:
+jaeger:
   enabled: true
-  email: admin@yourdomain.com
+  storage:
+    type: memory
 
+# Disable external dependencies not needed for quickstart
 dex:
-  enabled: true
-  config:
-    issuer: https://dex.yourdomain.com
-    staticClients:
-      - id: grafana
-        name: Grafana
-        secret: your-secure-secret
-        redirectURIs:
-          - https://grafana.yourdomain.com/login/generic_oauth
+  enabled: false
+
+external-dns:
+  enabled: false
+
+istio:
+  enabled: false
+
+# Use NodePort for easy access on any cluster
+service:
+  type: NodePort
 EOF
 ```
 
-### Step 3: Deploy KOF
+### Step 5: Deploy KOF
 
 ```bash
-# Add KOF Helm repository
-helm repo add kof oci://ghcr.io/k0rdent/kof/charts
-helm repo update
+# Deploy KOF components in the correct order
+helm install kof-operators kof/kof-operators -n kof --create-namespace --wait
 
-# Install KOF components
-helm install kof-mothership kof/kof-mothership -n kof --create-namespace -f production-values.yaml
-helm install kof-storage kof/kof-storage -n kof -f production-values.yaml
-helm install kof-collectors kof/kof-collectors -n kof
+helm install kof-storage kof/kof-storage -n kof -f quickstart-values.yaml --wait
+
+helm install kof-collectors kof/kof-collectors -n kof -f quickstart-values.yaml --wait
+
+helm install kof-mothership kof/kof-mothership -n kof -f quickstart-values.yaml --wait
 ```
 
-### Step 4: Configure DNS
-
-Point your domains to the cluster ingress:
+### Step 6: Verify Installation
 
 ```bash
-# Get ingress IP
+# Check all pods are running
+kubectl get pods -n kof
+
+# Check services
+kubectl get svc -n kof
+
+# Verify ingress (if using ingress controller)
 kubectl get ingress -n kof
 ```
 
-Create DNS records:
-- `grafana.yourdomain.com` → Ingress IP
-- `dex.yourdomain.com` → Ingress IP
+### Step 7: Access KOF
 
-## 🏢 Option 3: Multi-Cluster Production
+#### Option A: Port Forward (Works on any cluster)
 
-Deploy KOF across multiple clusters for production scale.
+```bash
+# Access Grafana UI
+kubectl port-forward svc/grafana 3000:3000 -n kof &
+
+# Access KOF Operator UI
+kubectl port-forward svc/kof-mothership-kof-operator-ui 9090:9090 -n kof &
+
+# Access VictoriaMetrics
+kubectl port-forward svc/vmselect-vmcluster 8481:8481 -n kof &
+
+# Access Jaeger UI
+kubectl port-forward svc/jaeger-query 16686:16686 -n kof &
+```
+
+#### Option B: NodePort (On-premises clusters)
+
+```bash
+# Get NodePort IPs and ports
+kubectl get svc -n kof | grep NodePort
+
+# Access via any node IP and the assigned port
+echo "Access Grafana at: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}'):$(kubectl get svc grafana -n kof -o jsonpath='{.spec.ports[0].nodePort}')"
+```
+
+#### Option C: LoadBalancer (Cloud providers)
+
+```bash
+# Get LoadBalancer IPs (for cloud providers)
+kubectl get svc -n kof | grep LoadBalancer
+
+# Access via the external IP
+echo "Access Grafana at: http://$(kubectl get svc grafana -n kof -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+```
+
+### Step 8: Get Login Credentials
+
+```bash
+# Get Grafana admin credentials
+GRAFANA_USER=$(kubectl get secret grafana-admin-credentials -n kof -o jsonpath='{.data.GF_SECURITY_ADMIN_USER}' | base64 -d)
+GRAFANA_PASSWORD=$(kubectl get secret grafana-admin-credentials -n kof -o jsonpath='{.data.GF_SECURITY_ADMIN_PASSWORD}' | base64 -d)
+
+echo "Grafana Login:"
+echo "Username: $GRAFANA_USER"
+echo "Password: $GRAFANA_PASSWORD"
+```
+
+## 🌐 Cloud Provider Specific Instructions
+
+### Amazon EKS
+
+```bash
+# Install AWS Load Balancer Controller
+kubectl apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller//crds?ref=master"
+
+# Update values for EKS
+cat >> quickstart-values.yaml <<EOF
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+EOF
+```
+
+### Google GKE
+
+```bash
+# Update values for GKE
+cat >> quickstart-values.yaml <<EOF
+ingress:
+  enabled: true
+  className: gce
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: kof-ip
+EOF
+```
+
+### Azure AKS
+
+```bash
+# Update values for AKS
+cat >> quickstart-values.yaml <<EOF
+ingress:
+  enabled: true
+  className: azure/application-gateway
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+EOF
+```
+
+### k0s Clusters
+
+```bash
+# k0s specific storage class
+DEFAULT_STORAGE_CLASS="local-path"
+
+# Update values for k0s
+cat >> quickstart-values.yaml <<EOF
+global:
+  storageClass: "local-path"
+EOF
+```
+
+### k3s Clusters
+
+```bash
+# k3s comes with Traefik ingress controller
+# Update values for k3s
+cat >> quickstart-values.yaml <<EOF
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    kubernetes.io/ingress.class: traefik
+EOF
+```
+
+## 🏢 Advanced Multi-Cluster Setup
+
+For production environments, deploy KOF across multiple clusters:
 
 ### Architecture Overview
 
 ```
-[Mothership] ──► [Regional Cluster] ──► [Child Cluster 1]
-     │                 │                      │
-     │                 │                [Child Cluster 2]
-     │                 │                      │
-     └─── Management   └─── Storage     └─── Workloads
+[Management Cluster] ──► [Regional Cluster] ──► [Child Cluster 1]
+        │                        │                      │
+        │                        │                [Child Cluster 2]
+        │                        │                      │
+        └─── UI & Control        └─── Storage      └─── Workloads
 ```
 
-### Step 1: Mothership Cluster
+### Step 1: Management Cluster
 
 ```bash
-# Install on management cluster
+# Deploy only management components
 helm install kof-mothership kof/kof-mothership -n kof --create-namespace \
-  --set kcm.installTemplates=true \
+  --set global.clusterRole=management \
   --set grafana.enabled=true \
-  --set grafana.ingress.enabled=true \
-  --set grafana.ingress.host=grafana.yourdomain.com
+  --set victoriametrics.enabled=false \
+  --set jaeger.enabled=false
 ```
 
 ### Step 2: Regional Cluster
 
 ```bash
-# Install on storage cluster
-kubectl label cluster regional-cluster k0rdent.mirantis.com/kof-cluster-role=regional
-
+# Deploy storage components
 helm install kof-storage kof/kof-storage -n kof --create-namespace \
-  --set global.clusterName=regional \
+  --set global.clusterRole=regional \
+  --set grafana.enabled=false \
   --set victoriametrics.enabled=true \
-  --set jaeger.enabled=true \
-  --set grafana.enabled=false
+  --set jaeger.enabled=true
 ```
 
 ### Step 3: Child Clusters
 
 ```bash
-# Install on each workload cluster
-kubectl label cluster child-cluster k0rdent.mirantis.com/kof-cluster-role=child
-
+# Deploy only collectors
 helm install kof-collectors kof/kof-collectors -n kof --create-namespace \
-  --set global.clusterName=child-1 \
-  --set kof.metrics.endpoint=https://vmauth.regional.yourdomain.com/vm/insert/0/prometheus/api/v1/write \
-  --set kof.logs.endpoint=https://vmauth.regional.yourdomain.com/vli/insert/opentelemetry/v1/logs \
-  --set kof.traces.endpoint=https://jaeger.regional.yourdomain.com/collector
+  --set global.clusterRole=child \
+  --set global.regionalEndpoint=https://regional.yourdomain.com
 ```
 
 ## 🔧 Common Configuration Tasks
 
-### Enable Istio Service Mesh
+### Enable Persistent Storage
 
 ```bash
-# Label namespace for Istio injection
-kubectl label namespace kof istio-injection=enabled
-
-# Deploy Istio configuration
-helm install kof-istio kof/kof-istio -n istio-system --create-namespace
-```
-
-### Configure External DNS (AWS)
-
-```bash
-# Create AWS credentials secret
-kubectl create secret generic external-dns-aws-credentials -n kof \
-  --from-literal=access-key-id=YOUR_ACCESS_KEY \
-  --from-literal=secret-access-key=YOUR_SECRET_KEY
-
-# Enable in values
-cat >> values.yaml <<EOF
-external-dns:
+# For cloud providers with dynamic provisioning
+cat >> quickstart-values.yaml <<EOF
+persistence:
   enabled: true
-  provider:
-    name: aws
-  env:
-    - name: AWS_DEFAULT_REGION
-      value: us-east-1
+  size: 50Gi
+  storageClass: "fast-ssd"  # Use your preferred storage class
 EOF
 ```
 
-### Setup Dex SSO with Google
+### Configure Resource Limits
 
 ```bash
-# Create Dex configuration
-cat > dex-values.yaml <<EOF
-dex:
-  enabled: true
-  config:
-    connectors:
-      - type: google
-        id: google
-        name: Google
-        config:
-          clientID: your-google-client-id
-          clientSecret: your-google-client-secret
-          redirectURI: https://dex.yourdomain.com/callback
+# Adjust resources based on your cluster size
+cat >> quickstart-values.yaml <<EOF
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
 EOF
-
-helm upgrade kof-mothership kof/kof-mothership -n kof -f dex-values.yaml
 ```
 
-## 🔍 Verification Steps
-
-### Check Component Status
+### Enable SSL/TLS
 
 ```bash
-# Verify all pods are running
-kubectl get pods -n kof
+# For clusters with cert-manager
+cat >> quickstart-values.yaml <<EOF
+ingress:
+  enabled: true
+  tls:
+    enabled: true
+    secretName: kof-tls-secret
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+EOF
+```
 
-# Check operator logs
-kubectl logs -l app.kubernetes.io/name=kof-operator -n kof
+## 🔍 Verification & Testing
+
+### Check Installation Health
+
+```bash
+# Verify all components are running
+kubectl get pods -n kof -o wide
+
+# Check resource usage
+kubectl top pods -n kof
 
 # Verify metrics collection
-kubectl port-forward svc/kof-mothership-kof-operator-ui 9090:9090 -n kof
-# Visit http://localhost:9090/api/targets
+kubectl port-forward svc/kof-mothership-kof-operator-ui 9090:9090 -n kof &
+# Visit http://localhost:9090/targets to see metrics targets
 ```
 
-### Test Data Flow
+### Test Data Collection
 
 ```bash
-# Create test application with metrics
+# Deploy a test application
 kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: test-app
+  name: test-metrics-app
   namespace: default
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: test-app
+      app: test-metrics-app
   template:
     metadata:
       labels:
-        app: test-app
-      annotations:
-        instrumentation.opentelemetry.io/inject-python: "true"
+        app: test-metrics-app
     spec:
       containers:
-      - name: app
-        image: python:3.9-slim
-        command: ["python", "-c", "import time; import random; [time.sleep(random.uniform(0.1, 2.0)) for _ in iter(int, 1)]"]
+      - name: metrics-generator
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-metrics-app
+  namespace: default
+spec:
+  selector:
+    app: test-metrics-app
+  ports:
+  - port: 80
+    targetPort: 80
 EOF
+
+# Verify metrics are being collected
+# Check in Grafana dashboards after 1-2 minutes
 ```
-
-### Access Dashboards
-
-1. **Grafana**: http://localhost:3000 (or your ingress)
-2. **KOF Operator UI**: http://localhost:9090
-3. **Jaeger**: Port-forward jaeger service on port 16686
 
 ## 🚨 Troubleshooting
 
 ### Common Issues
 
-**Pods stuck in Pending**:
+**Pods stuck in Pending state**:
 ```bash
-# Check resource constraints
+# Check node resources
 kubectl describe nodes
 kubectl top nodes
+
+# Check storage class
+kubectl get storageclass
+kubectl describe storageclass $DEFAULT_STORAGE_CLASS
 ```
 
-**Operator not working**:
+**Ingress not working**:
 ```bash
-# Check RBAC and CRDs
-kubectl get crd | grep kof
-kubectl auth can-i create clusterdeployments --as=system:serviceaccount:kof:kof-mothership-kof-operator
+# Check ingress controller
+kubectl get pods -n ingress-nginx
+kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
 ```
 
-**Metrics not flowing**:
+**Metrics not appearing**:
 ```bash
-# Check collector configuration
-kubectl get opentelemetrycollector -n kof -o yaml
-kubectl logs -l app.kubernetes.io/name=opentelemetry-collector -n kof
+# Check collectors
+kubectl logs -n kof -l app.kubernetes.io/name=opentelemetry-collector
+kubectl get opentelemetrycollector -n kof
 ```
 
 **Storage issues**:
 ```bash
-# Check PVC status
-kubectl get pvc -n kof
+# Check persistent volumes
+kubectl get pv,pvc -n kof
 kubectl describe pvc -n kof
 ```
 
 ### Getting Help
 
-1. **Check logs**: Use `kubectl logs` on failing pods
-2. **Generate support bundle**: `make support-bundle` (if using local setup)
-3. **Community**: [GitHub Discussions](https://github.com/k0rdent/kof/discussions)
-4. **Issues**: [GitHub Issues](https://github.com/k0rdent/kof/issues)
+1. **Check pod logs**: `kubectl logs -n kof <pod-name>`
+2. **Check events**: `kubectl get events -n kof --sort-by=.metadata.creationTimestamp`
+3. **Community Support**: [GitHub Discussions](https://github.com/k0rdent/kof/discussions)
+4. **Report Issues**: [GitHub Issues](https://github.com/k0rdent/kof/issues)
 
 ## 🎯 Next Steps
 
 Once KOF is running:
 
-1. **Explore Dashboards**: Check pre-built Grafana dashboards
-2. **Configure Alerts**: Setup alert rules for your environment
-3. **Add Applications**: Instrument your applications for tracing
-4. **Scale Up**: Add more regional and child clusters
-5. **Security**: Configure Dex SSO and Istio for production
+1. **Explore Dashboards**: Browse pre-built Grafana dashboards
+2. **Configure Alerts**: Set up alerting rules for your environment
+3. **Add Applications**: Instrument your apps with OpenTelemetry
+4. **Scale Deployment**: Add more regional and child clusters
+5. **Enhance Security**: Configure authentication and network policies
 
 ## 📚 Additional Resources
 
 - [Production Deployment Guide](PRODUCTION.md)
 - [Security Configuration](SECURITY.md)
-- [Architecture Deep Dive](README.md)
-- [Development Setup](dev.md)
+- [Architecture Overview](README.md)
 - [Troubleshooting Guide](TROUBLESHOOTING.md)
 
 ---
 
-🎉 **Congratulations!** You now have a running KOF deployment. Happy monitoring! 
+🎉 **Congratulations!** You now have KOF running on your Kubernetes cluster! Happy observing! 
