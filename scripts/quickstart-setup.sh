@@ -170,14 +170,14 @@ install_dependencies() {
     log_success "Dependencies installed successfully"
 }
 
-# Add helm repository
-add_helm_repo() {
-    log_info "Adding KOF Helm repository..."
+# Prepare for KOF installation
+prepare_kof_installation() {
+    log_info "Preparing for KOF installation..."
     
-    helm repo add kof oci://ghcr.io/k0rdent/kof/charts
-    helm repo update
+    # Note: We don't add OCI repositories, we install directly from them
+    # This function exists for consistency but OCI registries don't need repo add
     
-    log_success "KOF Helm repository added successfully"
+    log_success "KOF installation preparation completed"
 }
 
 # Generate values file
@@ -282,22 +282,22 @@ deploy_kof() {
     
     # Deploy operators
     log_info "Installing KOF operators..."
-    helm install kof-operators kof/kof-operators -n $NAMESPACE --create-namespace --wait --timeout=$TIMEOUT
+    helm install kof-operators oci://ghcr.io/k0rdent/kof/charts/kof-operators -n $NAMESPACE --create-namespace --wait --timeout=$TIMEOUT
     log_success "KOF operators installed"
     
     # Deploy storage
     log_info "Installing KOF storage..."
-    helm install kof-storage kof/kof-storage -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
+    helm install kof-storage oci://ghcr.io/k0rdent/kof/charts/kof-storage -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
     log_success "KOF storage installed"
     
     # Deploy collectors
     log_info "Installing KOF collectors..."
-    helm install kof-collectors kof/kof-collectors -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
+    helm install kof-collectors oci://ghcr.io/k0rdent/kof/charts/kof-collectors -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
     log_success "KOF collectors installed"
     
     # Deploy mothership
     log_info "Installing KOF mothership..."
-    helm install kof-mothership kof/kof-mothership -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
+    helm install kof-mothership oci://ghcr.io/k0rdent/kof/charts/kof-mothership -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
     log_success "KOF mothership installed"
     
     log_success "KOF deployment completed successfully!"
@@ -382,7 +382,7 @@ main() {
     detect_cluster_type
     get_storage_class
     install_dependencies
-    add_helm_repo
+    prepare_kof_installation
     generate_values
     deploy_kof
     verify_installation

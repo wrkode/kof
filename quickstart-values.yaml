@@ -1,0 +1,38 @@
+global:
+  clusterName: quickstart
+  storageClass: "local-path"
+
+# Enable single-cluster mode (all components)
+grafana:
+  enabled: true
+  security:
+    create_secret: true
+  persistence:
+    enabled: true
+    size: 10Gi
+
+victoriametrics:
+  enabled: true
+  vmcluster:
+    enabled: true
+    replicationFactor: 1
+    replicaCount: 1
+
+jaeger:
+  enabled: true
+  storage:
+    type: memory
+
+# Disable external dependencies not needed for quickstart
+dex:
+  enabled: false
+
+external-dns:
+  enabled: false
+
+istio:
+  enabled: false
+
+# Use NodePort for easy access on any cluster
+service:
+  type: NodePort

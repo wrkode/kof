@@ -66,15 +66,18 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/cont
 kubectl wait --for=condition=Available --timeout=300s deployment/ingress-nginx-controller -n ingress-nginx
 ```
 
-### Step 3: Add KOF Helm Repository
+### Step 3: Prepare for KOF Installation
 
 ```bash
-# Add the KOF Helm repository
-helm repo add kof oci://ghcr.io/k0rdent/kof/charts
-helm repo update
+# Option A: Install from OCI Registry (Recommended)
+# No setup required - we install directly from the OCI registry
+# The charts are available at: oci://ghcr.io/k0rdent/kof/charts/<chart-name>
 
-# Verify repository is added
-helm search repo kof
+# Option B: Use Local Charts (For Development)
+# Clone the repository and use local charts
+git clone https://github.com/k0rdent/kof.git
+cd kof
+# Then use ./charts/<chart-name> instead of OCI URLs in the commands below
 ```
 
 ### Step 4: Configure Values
@@ -137,13 +140,13 @@ EOF
 
 ```bash
 # Deploy KOF components in the correct order
-helm install kof-operators kof/kof-operators -n kof --create-namespace --wait
+helm install kof-operators oci://ghcr.io/k0rdent/kof/charts/kof-operators -n kof --create-namespace --wait
 
-helm install kof-storage kof/kof-storage -n kof -f quickstart-values.yaml --wait
+helm install kof-storage oci://ghcr.io/k0rdent/kof/charts/kof-storage -n kof -f quickstart-values.yaml --wait
 
-helm install kof-collectors kof/kof-collectors -n kof -f quickstart-values.yaml --wait
+helm install kof-collectors oci://ghcr.io/k0rdent/kof/charts/kof-collectors -n kof -f quickstart-values.yaml --wait
 
-helm install kof-mothership kof/kof-mothership -n kof -f quickstart-values.yaml --wait
+helm install kof-mothership oci://ghcr.io/k0rdent/kof/charts/kof-mothership -n kof -f quickstart-values.yaml --wait
 ```
 
 ### Step 6: Verify Installation
@@ -301,7 +304,7 @@ For production environments, deploy KOF across multiple clusters:
 
 ```bash
 # Deploy only management components
-helm install kof-mothership kof/kof-mothership -n kof --create-namespace \
+helm install kof-mothership oci://ghcr.io/k0rdent/kof/charts/kof-mothership -n kof --create-namespace \
   --set global.clusterRole=management \
   --set grafana.enabled=true \
   --set victoriametrics.enabled=false \
@@ -312,7 +315,7 @@ helm install kof-mothership kof/kof-mothership -n kof --create-namespace \
 
 ```bash
 # Deploy storage components
-helm install kof-storage kof/kof-storage -n kof --create-namespace \
+helm install kof-storage oci://ghcr.io/k0rdent/kof/charts/kof-storage -n kof --create-namespace \
   --set global.clusterRole=regional \
   --set grafana.enabled=false \
   --set victoriametrics.enabled=true \
@@ -323,7 +326,7 @@ helm install kof-storage kof/kof-storage -n kof --create-namespace \
 
 ```bash
 # Deploy only collectors
-helm install kof-collectors kof/kof-collectors -n kof --create-namespace \
+helm install kof-collectors oci://ghcr.io/k0rdent/kof/charts/kof-collectors -n kof --create-namespace \
   --set global.clusterRole=child \
   --set global.regionalEndpoint=https://regional.yourdomain.com
 ```
