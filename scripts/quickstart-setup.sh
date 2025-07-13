@@ -13,6 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
+ACTION="install"  # install, fix
 NAMESPACE="kof"
 TIMEOUT="300s"
 DEPLOYMENT_MODE="single"  # single, multi-cluster, regional, child
@@ -61,6 +62,7 @@ Service Mesh:
 General Options:
   -n, --namespace NAME     Kubernetes namespace (default: kof)
   -t, --timeout DURATION  Installation timeout (default: 300s)
+  --fix                    Fix an existing broken KOF installation
   -h, --help               Show this help message
 
 Examples:
@@ -121,6 +123,10 @@ parse_args() {
             -t|--timeout)
                 TIMEOUT="$2"
                 shift 2
+                ;;
+            --fix)
+                ACTION="fix"
+                shift
                 ;;
             -h|--help)
                 show_usage
@@ -565,6 +571,37 @@ dex:
 service:
   type: NodePort
 EOF
+
+    # Add collector values for single-cluster mode
+    cat >> quickstart-values.yaml <<EOF
+
+# Enable victoria-logs for log storage
+victoria-logs-cluster:
+  enabled: true
+
+# Fix collector endpoints for single-cluster mode
+kof:
+  basic_auth: false  # Disable auth for simplicity in quickstart
+  metrics:
+    endpoint: http://vminsert-cluster:8480/insert/0/prometheus/api/v1/write
+  logs:
+    endpoint: http://kof-storage-victoria-logs-cluster-vlinsert:9481/insert/opentelemetry/v1/logs
+  traces:
+    endpoint: http://kof-storage-jaeger-collector:4318
+
+# Fix OpenCost configuration for single-cluster mode  
+opencost:
+  enabled: true
+  opencost:
+    prometheus:
+      external:
+        enabled: true
+        url: http://vmselect-cluster:8481/select/0/prometheus  # Use HTTP not HTTPS
+      internal:
+        enabled: false
+    exporter:
+      defaultClusterId: "$DEFAULT_CLUSTER_NAME"
+EOF
 }
 
 # Generate multi-cluster values
@@ -583,13 +620,46 @@ grafana:
     size: 10Gi
 
 victoriametrics:
-  enabled: false
+  enabled: true
+  vmcluster:
+    enabled: true
+    replicationFactor: 1
+    replicaCount: 1
 
 jaeger:
-  enabled: false
+  enabled: true
+  storage:
+    type: memory
+
+# Enable victoria-logs for log storage
+victoria-logs-cluster:
+  enabled: true
 
 dex:
   enabled: true
+
+# Fix collector endpoints for management cluster
+kof:
+  basic_auth: false  # Disable auth for simplicity
+  metrics:
+    endpoint: http://vminsert-cluster:8480/insert/0/prometheus/api/v1/write
+  logs:
+    endpoint: http://kof-mothership-victoria-logs-cluster-vlinsert:9481/insert/opentelemetry/v1/logs
+  traces:
+    endpoint: http://kof-mothership-jaeger-collector:4318
+
+# Fix OpenCost configuration for management cluster
+opencost:
+  enabled: true
+  opencost:
+    prometheus:
+      external:
+        enabled: true
+        url: http://vmselect-cluster:8481/select/0/prometheus  # Use HTTP not HTTPS
+      internal:
+        enabled: false
+    exporter:
+      defaultClusterId: "management"
 EOF
             ;;
         "regional")
@@ -661,6 +731,43 @@ deploy_kof() {
     log_success "KOF deployment completed successfully!"
 }
 
+# Create dashboards
+create_dashboards() {
+    log_info "Installing KOF dashboards..."
+    
+    # Use helm template to render the storage chart dashboards
+    local temp_values=$(mktemp)
+    cat > "$temp_values" <<EOF
+global:
+  clusterName: $DEFAULT_CLUSTER_NAME
+  storageClass: $DEFAULT_STORAGE_CLASS
+
+grafana:
+  enabled: true
+
+# Disable other components to just get dashboards
+victoriametrics:
+  enabled: false
+jaeger:
+  enabled: false
+victoria-logs-cluster:
+  enabled: false
+promxy:
+  enabled: false
+jaeger-operator:
+  enabled: false
+EOF
+    
+    # Generate and apply dashboards
+    helm template kof-storage-dashboards oci://ghcr.io/k0rdent/kof/charts/kof-storage -f "$temp_values" --set global.clusterName="$DEFAULT_CLUSTER_NAME" --set global.storageClass="$DEFAULT_STORAGE_CLASS" | \
+        grep -A 1000 "kind: GrafanaDashboard" | \
+        sed "s/namespace: default/namespace: $NAMESPACE/g" | \
+        kubectl apply -f - || log_warning "Some dashboards may have failed to install"
+    
+    rm -f "$temp_values"
+    log_success "KOF dashboards installed"
+}
+
 # Deploy single cluster
 deploy_single_cluster() {
     # Deploy operators
@@ -668,12 +775,15 @@ deploy_single_cluster() {
     helm install kof-operators oci://ghcr.io/k0rdent/kof/charts/kof-operators -n $NAMESPACE --create-namespace --wait --timeout=$TIMEOUT
     log_success "KOF operators installed"
     
+    # Generate Dex TLS secret if needed (before any component that might need it)
+    generate_dex_tls_secret
+    
     # Deploy storage
     log_info "Installing KOF storage..."
     helm install kof-storage oci://ghcr.io/k0rdent/kof/charts/kof-storage -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
     log_success "KOF storage installed"
     
-    # Deploy collectors
+    # Deploy collectors with fixed configuration
     log_info "Installing KOF collectors..."
     helm install kof-collectors oci://ghcr.io/k0rdent/kof/charts/kof-collectors -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
     log_success "KOF collectors installed"
@@ -682,20 +792,260 @@ deploy_single_cluster() {
     log_info "Installing KOF mothership..."
     helm install kof-mothership oci://ghcr.io/k0rdent/kof/charts/kof-mothership -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
     log_success "KOF mothership installed"
+    
+    # Create dashboards and apply any needed fixes
+    create_dashboards
+    
+    # Apply post-installation fixes to ensure everything works correctly
+    log_info "Applying post-installation fixes..."
+    sleep 10  # Give pods time to start
+    ./scripts/fix-kof-installation.sh || log_warning "Some post-installation fixes may have failed"
+}
+
+# Check if Dex TLS secret is needed
+needs_dex_tls_secret() {
+    # Check if dex.enabled is true in the values file
+    if [[ -f "quickstart-values.yaml" ]]; then
+        if grep -q "dex:" quickstart-values.yaml && grep -A5 "dex:" quickstart-values.yaml | grep -q "enabled: true"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Generate Dex TLS secret
+generate_dex_tls_secret() {
+    # Only generate if needed
+    if ! needs_dex_tls_secret; then
+        return 0
+    fi
+    
+    # Check if secret already exists
+    if kubectl get secret dex-tls -n $NAMESPACE &>/dev/null; then
+        log_info "Dex TLS secret already exists, skipping generation"
+        return 0
+    fi
+    
+    log_info "Generating Dex TLS certificates..."
+    
+    # Create temporary directory for certificates
+    local temp_dir=$(mktemp -d)
+    
+    # Determine the Dex hostname based on configuration
+    local dex_hostname="dex.example.com"
+    if [[ "$ENABLE_DNS" == "true" && -n "$DNS_DOMAIN" ]]; then
+        dex_hostname="dex.${DNS_DOMAIN}"
+    fi
+    
+    # Create certificate request configuration
+    cat > "${temp_dir}/req.cnf" <<EOF
+[req]
+req_extensions = v3_req
+distinguished_name = req_distinguished_name
+
+[req_distinguished_name]
+
+[ v3_req ]
+basicConstraints = CA:FALSE
+keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = ${dex_hostname}
+DNS.2 = localhost
+IP.1 = 127.0.0.1
+EOF
+    
+    # Generate CA key and certificate
+    openssl genrsa -out "${temp_dir}/ca-key.pem" 2048 2>/dev/null
+    openssl req -x509 -new -nodes -key "${temp_dir}/ca-key.pem" -days 365 -out "${temp_dir}/ca.pem" -subj "/CN=kof-ca" 2>/dev/null
+    
+    # Generate server key and certificate
+    openssl genrsa -out "${temp_dir}/key.pem" 2048 2>/dev/null
+    openssl req -new -key "${temp_dir}/key.pem" -out "${temp_dir}/csr.pem" -subj "/CN=${dex_hostname}" -config "${temp_dir}/req.cnf" 2>/dev/null
+    openssl x509 -req -in "${temp_dir}/csr.pem" -CA "${temp_dir}/ca.pem" -CAkey "${temp_dir}/ca-key.pem" -CAcreateserial -out "${temp_dir}/cert.pem" -days 365 -extensions v3_req -extfile "${temp_dir}/req.cnf" 2>/dev/null
+    
+    # Create the dex-tls secret
+    kubectl create secret tls dex-tls -n $NAMESPACE \
+        --cert="${temp_dir}/cert.pem" \
+        --key="${temp_dir}/key.pem" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    
+    # Clean up
+    rm -rf "$temp_dir"
+    
+    log_success "Dex TLS secret created successfully"
+}
+
+# Fix existing broken installation
+fix_existing_installation() {
+    log_info "Fixing existing KOF installation..."
+    
+    # Check what's already installed
+    local installed_charts=($(helm list -n $NAMESPACE -q 2>/dev/null || true))
+    
+    if [[ ${#installed_charts[@]} -eq 0 ]]; then
+        log_error "No KOF installation found in namespace $NAMESPACE"
+        return 1
+    fi
+    
+    log_info "Found installed charts: ${installed_charts[*]}"
+    
+    # Create fixed values file
+    local temp_values=$(mktemp)
+    cat > "$temp_values" <<EOF
+global:
+  clusterName: ${DEFAULT_CLUSTER_NAME:-quickstart}
+  storageClass: $DEFAULT_STORAGE_CLASS
+
+# Enable storage components for self-contained setup
+victoriametrics:
+  enabled: true
+  vmcluster:
+    enabled: true
+    replicationFactor: 1
+    replicaCount: 1
+
+jaeger:
+  enabled: true
+  storage:
+    type: memory
+
+victoria-logs-cluster:
+  enabled: true
+
+grafana:
+  enabled: false  # Grafana is already enabled in mothership
+  security:
+    create_secret: false
+
+# Fix collector endpoints
+kof:
+  basic_auth: false
+  metrics:
+    endpoint: http://vminsert-cluster:8480/insert/0/prometheus/api/v1/write
+  logs:
+    endpoint: http://kof-storage-victoria-logs-cluster-vlinsert:9481/insert/opentelemetry/v1/logs
+  traces:
+    endpoint: http://kof-storage-jaeger-collector:4318
+
+# Fix OpenCost configuration
+opencost:
+  enabled: true
+  opencost:
+    prometheus:
+      external:
+        enabled: true
+        url: http://vmselect-cluster:8481/select/0/prometheus
+      internal:
+        enabled: false
+    exporter:
+      defaultClusterId: "${DEFAULT_CLUSTER_NAME:-quickstart}"
+
+dex:
+  enabled: true
+EOF
+    
+    # Generate Dex TLS secret if needed
+    generate_dex_tls_secret
+    
+    # Upgrade existing installations with fixed configuration
+    for chart in "${installed_charts[@]}"; do
+        case $chart in
+            "kof-mothership")
+                log_info "Fixing kof-mothership configuration..."
+                helm upgrade kof-mothership oci://ghcr.io/k0rdent/kof/charts/kof-mothership -n $NAMESPACE -f "$temp_values" --wait --timeout=$TIMEOUT
+                ;;
+            "kof-storage")
+                log_info "Fixing kof-storage configuration..."
+                helm upgrade kof-storage oci://ghcr.io/k0rdent/kof/charts/kof-storage -n $NAMESPACE -f "$temp_values" --wait --timeout=$TIMEOUT
+                ;;
+            "kof-collectors")
+                log_info "Fixing kof-collectors configuration..."
+                helm upgrade kof-collectors oci://ghcr.io/k0rdent/kof/charts/kof-collectors -n $NAMESPACE -f "$temp_values" --wait --timeout=$TIMEOUT
+                ;;
+        esac
+    done
+    
+    # Install missing components
+    if [[ ! " ${installed_charts[*]} " =~ " kof-storage " ]]; then
+        log_info "Installing missing kof-storage..."
+        
+        # Handle resource conflicts by updating ownership metadata
+        log_info "Handling potential resource conflicts..."
+        
+        # Update Grafana credentials secret if it exists
+        if kubectl get secret grafana-admin-credentials -n $NAMESPACE &>/dev/null; then
+            log_info "Updating grafana-admin-credentials secret ownership..."
+            kubectl annotate secret grafana-admin-credentials -n $NAMESPACE meta.helm.sh/release-name=kof-storage --overwrite
+            kubectl label secret grafana-admin-credentials -n $NAMESPACE app.kubernetes.io/managed-by=Helm --overwrite
+        fi
+        
+        # Update VictoriaMetrics ClusterRoles if they exist
+        for resource in "victoriametrics:admin" "victoriametrics:view"; do
+            if kubectl get clusterrole "$resource" &>/dev/null; then
+                log_info "Updating $resource ClusterRole ownership..."
+                kubectl annotate clusterrole "$resource" meta.helm.sh/release-name=kof-storage --overwrite || true
+                kubectl label clusterrole "$resource" app.kubernetes.io/managed-by=Helm --overwrite || true
+            fi
+        done
+        
+        # Update VictoriaMetrics VMCluster if it exists
+        if kubectl get vmcluster cluster -n $NAMESPACE &>/dev/null; then
+            log_info "Updating VMCluster cluster ownership..."
+            kubectl annotate vmcluster cluster -n $NAMESPACE meta.helm.sh/release-name=kof-storage --overwrite || true
+            kubectl label vmcluster cluster -n $NAMESPACE app.kubernetes.io/managed-by=Helm --overwrite || true
+        fi
+        
+        helm install kof-storage oci://ghcr.io/k0rdent/kof/charts/kof-storage -n $NAMESPACE -f "$temp_values" --wait --timeout=$TIMEOUT
+    fi
+    
+    if [[ ! " ${installed_charts[*]} " =~ " kof-collectors " ]]; then
+        log_info "Installing missing kof-collectors..."
+        helm install kof-collectors oci://ghcr.io/k0rdent/kof/charts/kof-collectors -n $NAMESPACE -f "$temp_values" --wait --timeout=$TIMEOUT
+    fi
+    
+    # Create/update dashboards
+    create_dashboards
+    
+    rm -f "$temp_values"
+    log_success "Installation fixed successfully!"
 }
 
 # Deploy multi-cluster
 deploy_multi_cluster() {
     case $CLUSTER_ROLE in
         "management")
-            log_info "Installing KOF mothership for management cluster..."
+            log_info "Installing KOF management cluster components..."
             helm install kof-operators oci://ghcr.io/k0rdent/kof/charts/kof-operators -n $NAMESPACE --create-namespace --wait --timeout=$TIMEOUT
+            
+            # Generate Dex TLS secret before installing mothership
+            generate_dex_tls_secret
+            
+            # Install storage for self-contained management cluster
+            log_info "Installing KOF storage for management cluster..."
+            helm install kof-storage oci://ghcr.io/k0rdent/kof/charts/kof-storage -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
+            
+            # Install collectors for metrics collection
+            log_info "Installing KOF collectors for management cluster..."
+            helm install kof-collectors oci://ghcr.io/k0rdent/kof/charts/kof-collectors -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
+            
+            # Install mothership
+            log_info "Installing KOF mothership..."
             helm install kof-mothership oci://ghcr.io/k0rdent/kof/charts/kof-mothership -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
+            
+            # Create dashboards
+            create_dashboards
+            
             log_success "KOF management components installed"
             ;;
         "regional")
             log_info "Installing KOF storage for regional cluster..."
             helm install kof-operators oci://ghcr.io/k0rdent/kof/charts/kof-operators -n $NAMESPACE --create-namespace --wait --timeout=$TIMEOUT
+            
+            # Generate Dex TLS secret if needed (storage can also have Dex enabled)
+            generate_dex_tls_secret
+            
             helm install kof-storage oci://ghcr.io/k0rdent/kof/charts/kof-storage -n $NAMESPACE -f quickstart-values.yaml --wait --timeout=$TIMEOUT
             log_success "KOF regional components installed"
             ;;
@@ -839,15 +1189,29 @@ main() {
     check_prerequisites
     detect_cluster_type
     get_storage_class
-    setup_dns_auto_config
-    install_dependencies
-    prepare_kof_installation
-    generate_values
-    deploy_kof
-    verify_installation
-    show_access_info
     
-    log_success "KOF setup completed successfully!"
+    case "$ACTION" in
+        "fix")
+            fix_existing_installation
+            verify_installation
+            show_access_info
+            log_success "KOF installation fixed successfully!"
+            ;;
+        "install")
+            setup_dns_auto_config
+            install_dependencies
+            prepare_kof_installation
+            generate_values
+            deploy_kof
+            verify_installation
+            show_access_info
+            log_success "KOF setup completed successfully!"
+            ;;
+        *)
+            log_error "Unknown action: $ACTION"
+            exit 1
+            ;;
+    esac
 }
 
 # Run main function

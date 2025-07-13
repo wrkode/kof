@@ -631,6 +631,73 @@ kubectl top nodes
 
 ### Common Issues
 
+**Dex TLS Secret Missing Error**:
+```bash
+# If you see error: MountVolume.SetUp failed for volume "tls" : secret "dex-tls" not found
+# This happens when Dex SSO is enabled but TLS secret is missing
+
+# Solution 1: Use the generate script (recommended)
+./scripts/generate-dex-secret.bash
+
+# Solution 2: Create manually with your own certificates
+kubectl create secret tls dex-tls -n kof \
+  --cert=path/to/cert.pem \
+  --key=path/to/key.pem
+
+# Restart the affected pods
+kubectl rollout restart deployment -n kof -l app.kubernetes.io/component=dex
+```
+
+**OpenCost HTTPS/HTTP Configuration Error**:
+```bash
+# If OpenCost pods are crashing with "http: server gave HTTP response to HTTPS client"
+# This happens when OpenCost tries to connect to VictoriaMetrics with HTTPS but VM serves HTTP
+
+# Quick fix: Use the automated fix script
+./scripts/fix-kof-installation.sh
+
+# Manual fix: Update OpenCost configuration
+kubectl patch configmap kof-collectors-opencost -n kof --patch='
+data:
+  PROMETHEUS_SERVER_ENDPOINT: "http://vmselect-cluster:8481/select/0/prometheus"
+'
+kubectl rollout restart deployment/kof-collectors-opencost -n kof
+```
+
+**Missing Data in Dashboards**:
+```bash
+# If Grafana dashboards exist but show no data
+# This often happens due to endpoint configuration issues
+
+# Solution 1: Use the comprehensive fix script (recommended)
+./scripts/fix-kof-installation.sh
+
+# Solution 2: Manual verification and restart
+# Check if VictoriaMetrics is receiving data
+kubectl port-forward svc/vmselect-cluster 8481:8481 -n kof &
+curl "http://localhost:8481/select/0/prometheus/api/v1/query?query=up"
+
+# Restart collectors if no data
+kubectl rollout restart deployment/kof-collectors-k8s-cluster-collector -n kof
+kubectl rollout restart daemonset/kof-collectors-node-exporter-collector -n kof
+```
+
+**Comprehensive Installation Fix**:
+```bash
+# If you have multiple issues or an incomplete installation
+# Use the comprehensive fix script that addresses common problems:
+
+make quickstart-fix
+# OR
+./scripts/fix-kof-installation.sh
+
+# This script automatically:
+# - Fixes OpenCost endpoint configuration
+# - Restarts collectors for proper data flow
+# - Creates basic dashboards
+# - Verifies VictoriaMetrics data ingestion
+```
+
 **Pods stuck in Pending state**:
 ```bash
 # Check node resources

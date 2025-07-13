@@ -345,6 +345,10 @@ quickstart-istio: ## Deploy KOF with Istio service mesh
 quickstart-cleanup: ## Clean up KOF installation
 	./scripts/quickstart-cleanup.sh
 
+.PHONY: quickstart-fix
+quickstart-fix: ## Fix an existing broken KOF installation
+	./scripts/fix-kof-installation.sh
+
 .PHONY: support-bundle
 support-bundle: SUPPORT_BUNDLE_OUTPUT=$(CURDIR)/support-bundle-$(shell date +"%Y-%m-%dT%H_%M_%S")
 support-bundle: envsubst support-bundle-cli

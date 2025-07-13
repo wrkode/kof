@@ -122,6 +122,11 @@ remove_kof_namespace() {
     log_info "Removing KOF namespace and resources..."
     
     if kubectl get namespace "$NAMESPACE" &> /dev/null; then
+        # Remove KOF-specific secrets first
+        log_info "Removing KOF secrets..."
+        kubectl delete secret dex-tls -n "$NAMESPACE" --ignore-not-found=true || true
+        kubectl delete secret grafana-admin-credentials -n "$NAMESPACE" --ignore-not-found=true || true
+        
         # Remove any finalizers that might block deletion
         log_info "Removing finalizers from KOF resources..."
         kubectl patch pvc -n "$NAMESPACE" --all -p '{"metadata":{"finalizers":null}}' --type=merge || true
